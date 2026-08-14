@@ -56,6 +56,9 @@ case "$pm" in
     ;;
 esac
 
+# freshclam под root ломает владельца базы -> вернуть clamav
+chown -R clamav:clamav /var/lib/clamav 2>/dev/null || true
+
 printf '%s\n' "[3/4] Установка сценариев и сервиса автозапуска..."
 install -d /usr/local/sbin /var/log/clamav /etc/issue.d
 
@@ -67,7 +70,7 @@ LOG=/var/log/clamav/bootscan.log
 /usr/bin/clamscan -r -i -q --no-summary \
   --exclude-dir='^/proc' --exclude-dir='^/sys' --exclude-dir='^/dev' \
   --exclude-dir='^/run' --exclude-dir='^/mnt' --exclude-dir='^/media' \
-  --exclude-dir='^/var/cache' \
+  --exclude-dir='^/var/cache' --exclude-dir='\.cache$' \
   / 2>>"$LOG" > "$REPORT" || true
 if [ -s "$REPORT" ] && grep -q "FOUND" "$REPORT"; then
   {
@@ -88,7 +91,7 @@ chmod 755 /usr/local/sbin/clamav-bootscan.sh
 
 cat > /usr/local/sbin/clamav-bootscan-start.sh <<'EOF'
 #!/usr/bin/env bash
-setsid /usr/local/sbin/clamav-bootscan.sh >/dev/null 2>&1 &
+setsid nice -n 19 ionice -c 3 /usr/local/sbin/clamav-bootscan.sh >/dev/null 2>&1 &
 exit 0
 EOF
 chmod 755 /usr/local/sbin/clamav-bootscan-start.sh
@@ -96,7 +99,7 @@ chmod 755 /usr/local/sbin/clamav-bootscan-start.sh
 if [ -d /run/systemd/system ]; then
   cat > /etc/systemd/system/clamav-bootscan.service <<'EOF'
 [Unit]
-Description=ClamAV boot-time system scan
+Description=ClamAV full system scan
 After=local-fs.target network-online.target
 Wants=network-online.target
 
@@ -105,15 +108,29 @@ Type=oneshot
 RemainAfterExit=yes
 ExecStart=/usr/local/sbin/clamav-bootscan-start.sh
 TimeoutSec=0
+EOF
+
+  cat > /etc/systemd/system/clamav-bootscan.timer <<'EOF'
+[Unit]
+Description=ClamAV daily system scan timer
+
+[Timer]
+OnCalendar=daily
+Persistent=true
+RandomizedDelaySec=15min
+OnActiveSec=1min
+Unit=clamav-bootscan.service
 
 [Install]
-WantedBy=multi-user.target
+WantedBy=timers.target
 EOF
+
   systemctl daemon-reload
-  systemctl enable clamav-bootscan.service
-  printf '%s\n' "[4/4] Сервис clamav-bootscan добавлен в автозагрузку."
+  systemctl enable clamav-bootscan.timer
+  printf '%s\n' "[4/4] Таймер clamav-bootscan добавлен в автозагрузку."
+  printf '%s\n' "Скан идёт раз в сутки; если комп был выключен в это время — выполнится при следующей загрузке."
   printf '%s\n' "Запуск первой проверки (в фоне)..."
-  systemctl start clamav-bootscan.service
+  systemctl start clamav-bootscan.timer
 else
   if ! grep -q "clamav-bootscan" /etc/rc.local 2>/dev/null; then
     printf '%s\n' "/usr/local/sbin/clamav-bootscan-start.sh" >> /etc/rc.local
@@ -122,6 +139,7 @@ else
   printf '%s\n' "[4/4] Автозапуск добавлен в /etc/rc.local."
 fi
 
-printf '%s\n' "Готово. При каждой загрузке система будет проверяться на вирусы."
+printf '%s\n' "Готово. Система будет проверяться на вирусы раз в сутки."
+printf '%s\n' "Пропущенное сканирование выполнится при следующей загрузке (Persistent=true)."
 printf '%s\n' "Журнал сканирования: /var/log/clamav/bootscan.log"
 printf '%s\n' "Отчёт об обнаружениях: /var/log/clamav/boot-report.txt"
