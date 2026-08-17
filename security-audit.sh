@@ -164,7 +164,7 @@ fi
 # ---------------- Обновления ----------------
 header "Системные обновления"
 if command -v apt >/dev/null; then
-  UPD=$(apt-get -s upgrade 2>/dev/null | awk -F'[(),]' '/^Inst / {s+=$2} END {print s+0}')
+  UPD=$(apt-get -s upgrade 2>/dev/null | awk '/^Inst / {n++} END {print n+0}')
   if [[ "$UPD" -eq 0 ]]; then
     ok "Обновления установлены"
   else
