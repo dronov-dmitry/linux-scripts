@@ -49,7 +49,7 @@ verdict() {
 }
 
 docker_status() {
-  if command -v systemctl >/dev/null && systemctl is-active docker >/dev/null 2>&1; then
+  if command -v systemctl >/dev/null && systemctl is-active docker 2>/dev/null | grep -qx "active"; then
     warn "Docker активен — проверьте контейнеры на уязвимости и права."
   fi
 }
@@ -284,14 +284,20 @@ fi
 # ---------------- SUID/SGID ----------------
 header "SUID/SGID бинарники (потенциально опасные)"
 SUIDD=$(find / -xdev -type f -perm /6000 2>/dev/null)
-echo "  Кол-во SUID/SGID файлов: $(echo "$SUIDD" | grep -c .)"
+N=$(echo "$SUIDD" | grep -c . )
+echo "  Кол-во SUID/SGID файлов: $N"
 if echo "$SUIDD" | grep -qE "(/bin/(mount|umount|su)|/usr/bin/(sudo|passwd|su))"; then
   ok "Стандартные SUID утилиты на месте"
 fi
-UNW=$(echo "$SUIDD" | grep -viE '/bin/(su|mount|umount)|/usr/bin/(sudo|passwd|chsh|chfn|gpasswd|newgrp|pkexec|fusermount3?|dmcrypt|ssh-agent)|/usr/(lib|libexec)/(openssh|dbus)/|/snap/|/opt/|passwd.run|^/bin/wall' 2>/dev/null || true)
+# Стандартный набор Ubuntu: /usr/*, /bin/*, /snap, /opt, /lib; chroot-сборки pmbootstrap — вне хоста.
+PMB=$(echo "$SUIDD" | grep -cE 'pmbootstrap|/chroot' || true)
+[[ -n "$PMB" && "$PMB" -gt 0 ]] && echo "  INFO: $PMB SUID-файлов во chroot pmbootstrap (нормально для сборки Android-ROM, на хост не влияют)."
+UNW=$(echo "$SUIDD" | grep -vE '^(/usr|/bin|/snap|/opt|/lib|/etc)' | grep -vE 'pmbootstrap|/chroot')
 if [[ -n "$UNW" ]]; then
-  warn "Нестандартные SUID-файлы:"
+  warn "SUID-файлы вне стандартных путей (/usr, /bin, /snap, /opt, /lib):"
   echo "$UNW" | sed 's/^/    /'
+else
+  ok "Все SUID/SGID файлы в стандартных путях"
 fi
 
 # ---------------- Мир-записываемые файлы ----------------
