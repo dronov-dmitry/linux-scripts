@@ -9,6 +9,11 @@
 
 set -u
 
+# Принудительно английская локаль, чтобы тесты грепали "Status: active", "active" и т.п.
+# без зависимости от локали системы (ru_RU.UTF-8 переводит вывод ufw/apt/… на русский).
+# Важно: в glibc переменная LANGUAGE приоритетнее LC_ALL, поэтому сбрасываем её тоже.
+export LC_ALL=C LANGUAGE=C LANG=C
+
 if [[ $EUID -ne 0 ]]; then
   echo "Запустите с правами root: sudo $0" >&2
   exit 1
