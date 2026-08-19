@@ -39,8 +39,14 @@ else
 fi
 
 run_user gsettings set "$SCHEMA" custom-keybindings "$NEW_BINDINGS"
+SESSION_ID="$(loginctl list-sessions --no-legend 2>/dev/null | awk -v u="$REAL_USER" '$3==u {print $1; exit}')"
+SESSION_TYPE="$(loginctl show-session "$SESSION_ID" -p Type --value 2>/dev/null)"
+CLIP_CMD="wl-copy"
+if [ "$SESSION_TYPE" = "x11" ]; then
+    CLIP_CMD="xclip -selection clipboard -t image/png"
+fi
 run_user dconf write "${CUSTOM_PATH}name" "'Mouse Screenshot Wayland'"
-run_user dconf write "${CUSTOM_PATH}command" "'bash -c \"gnome-screenshot -a -f /tmp/shot.png && wl-copy < /tmp/shot.png\"'"
+run_user dconf write "${CUSTOM_PATH}command" "'bash -c \"gnome-screenshot -a -f /tmp/shot.png && ${CLIP_CMD} < /tmp/shot.png\"'"
 run_user dconf write "${CUSTOM_PATH}binding" "'<Control><Alt>s'"
 echo "  ✔ Горячая клавиша Ctrl+Alt+S настроена"
 
@@ -53,7 +59,7 @@ while IFS= read -r line; do
     if [[ "$line" == N:\ Name=* ]]; then
         CURRENT_NAME=$(echo "$line" | sed 's/.*Name="\(.*\)"/\1/')
     fi
-    if [[ "$line" == H:\ Handlers=*mouse* && "$CURRENT_NAME" == *"MOUSE"* ]]; then
+    if [[ "$line" == H:\ Handlers=*mouse* && "$CURRENT_NAME" == *[Mm][Oo][Uu][Ss][Ee]* ]]; then
         MOUSE_NAME="$CURRENT_NAME"
         break
     fi
@@ -74,12 +80,23 @@ CONFIG_DIR="$REAL_HOME/.config/input-remapper-2"
 PRESET_DIR="$CONFIG_DIR/presets/${MOUSE_NAME}"
 mkdir -p "$PRESET_DIR"
 
-# config.json обязателен — без него daemon не принимает injection-запросы
-if [ ! -f "$CONFIG_DIR/config.json" ]; then
-    echo '{}' > "$CONFIG_DIR/config.json"
-    chown "$REAL_USER":"$REAL_USER" "$CONFIG_DIR/config.json"
-    echo "  ✔ Создан config.json"
-fi
+# config.json обязателен — без него daemon не принимает injection-запросы.
+# Обновляем autoload, чтобы daemon сразу подхватывал наш пресет.
+mkdir -p "$CONFIG_DIR"
+run_user python3 - "$CONFIG_DIR/config.json" "$MOUSE_NAME" << 'PYEOF'
+import json, sys
+path, name = sys.argv[1], sys.argv[2]
+try:
+    with open(path) as f:
+        cfg = json.load(f)
+except (OSError, ValueError):
+    cfg = {}
+cfg["version"] = "2.0.1"
+cfg.setdefault("autoload", {})[name] = "screenshot"
+with open(path, "w") as f:
+    json.dump(cfg, f, indent=4)
+PYEOF
+chown "$REAL_USER":"$REAL_USER" "$CONFIG_DIR/config.json"
 
 # Новый формат пресета input-remapper 2.0 (список объектов, НЕ старый dict)
 cat > "$PRESET_DIR/screenshot.json" << 'PRESET'
@@ -103,10 +120,7 @@ systemctl restart input-remapper 2>/dev/null || true
 sleep 1
 echo "  ✔ Сервис перезапущен"
 
-input-remapper-control --command stop-all 2>/dev/null || true
-input-remapper-control --command start \
-    --device "$MOUSE_NAME" \
-    --preset screenshot 2>/dev/null || true
+input-remapper-control --device "$MOUSE_NAME" --preset screenshot --command start 2>/dev/null || true
 echo "  ✔ Пресет применён"
 
 echo ""
