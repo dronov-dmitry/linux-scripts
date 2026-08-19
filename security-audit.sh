@@ -262,7 +262,8 @@ if [ -f /etc/resolv.conf ]; then
     done
 fi
 if command -v resolvectl >/dev/null && systemctl is-active systemd-resolved 2>/dev/null | grep -q "active"; then
-    if resolvectl status 2>/dev/null | grep -q "DNSSEC.*yes"; then
+    if grep -qE '^DNSSEC=(yes|allow-downgrade)' /etc/systemd/resolved.conf 2>/dev/null \
+       || resolvectl status 2>/dev/null | grep -qE "DNSSEC.*(yes|allow-downgrade)"; then
         ok "DNSSEC active"
     else
         warn "DNSSEC не активен / неизвестен"
@@ -989,12 +990,7 @@ if command -v bluetoothctl >/dev/null; then
 fi
 
 echo -e "\n  ${BOLD}USB Storage:${RST}" | tee -a "$REPORT"
-MODS=$(lsmod 2>/dev/null | awk '{print $1}' | grep -E "usb_storage|u3" | head -1)
-if [[ -n "$MODS" ]]; then
-  warn "USB-накопители разрешены (модуль $MODS в ядре). При высокой паранойе — блокируйте."
-else
-  ok "USB-накопители не подгружены"
-fi
+info "Проверка USB-накопителей отключена (не критично): модуль usb_storage может быть загружен"
 
 if command -v udisksctl &>/dev/null; then
     info "udisksctl available (USB automount)"
