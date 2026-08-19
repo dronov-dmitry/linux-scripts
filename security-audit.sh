@@ -8,31 +8,42 @@
 #   /home/kat/security-audit_report_<дата_время>.txt с итоговым вердиктом
 #   (PASS/FAIL/WARN/INFO) и списком критичных исправлений и рекомендаций.
 #
-# ПРОВЕРЯЕМЫЕ ОБЛАСТИ (19 разделов):
+# ПРОВЕРЯЕМЫЕ ОБЛАСТИ (24 раздела):
 #   1.  Ядро и загрузка: sysctl-параметры (ASLR, kptr_restrict, rp_filter,
-#       ip_forward, protect_fifos, core_pattern и др.), KASLR, Secure Boot.
-#   2.  Файрвол и сеть: UFW, правила iptables, сетевые интерфейсы,
-#       прослушиваемые порты, DNS/DNSSEC.
-#   3.  SSH: установлен ли sshd, слушается ли порт 22.
-#   4.  Пользователи: uid=0, пароли, срок действия пароля, root заблокирован.
-#   5.  Sudo и PAM: NOPASSWD-правила, логирование sudo, pam_wheel.
+#       ip_forward, protect_fifos, core_pattern и др.), KASLR, тип загрузки (EFI/BIOS).
+#   2.  Файрвол и сеть: UFW, nftables, правила iptables, сетевые интерфейсы,
+#       прослушиваемые порты, удалённые сервисы, DNS/DNSSEC, IPv6.
+#   3.  SSH: установлен ли sshd, слушается ли порт 22, настройки sshd_config
+#       (PermitRootLogin, PasswordAuthentication, слабые шифры/MAC/KEX и др.).
+#   4.  Пользователи: uid=0, пароли, срок действия пароля, root заблокирован,
+#       UMASK, домашние директории, системные аккаунты.
+#   5.  Sudo и PAM: NOPASSWD-правила, логирование sudo, secure_path,
+#       pam_wheel, pwquality, faillock.
 #   6.  Неудачные входы и признаки атак по логам.
 #   7.  Бэкдоры/руткиты: rkhunter/chkrootkit/ClamAV, SUID/SGID, LD_PRELOAD,
 #       следы руткитов, подозрительные процессы.
 #   8.  ПО и уязвимости: доступные обновления, автообновления, snap-пакеты,
-#       целостность dpkg.
+#       опасные пакеты, целостность dpkg.
 #   9.  Docker security (если установлен).
-#  10.  Файловая система и диски: монтирование, шифрование (LUKS), место.
-#  11.  Службы и демоны: потенциально опасные и все запущенные сервисы.
-#  12.  Логирование и мониторинг: auditd, fail2ban, rsyslog, файлы логов.
-#  13.  Индикаторы вредоносной активности: cron-задачи, бесхозные файлы,
-#       файлы без владельца, права критичных файлов (/etc/passwd, shadow и др.).
+#  10.  Файловая система и диски: монтирование, шифрование (LUKS), swap,
+#       место, права /boot, лимиты журнала.
+#  11.  Службы и демоны: потенциально опасные и все запущенные сервисы,
+#       avahi, CUPS, скрытые сокеты.
+#  12.  Логирование и мониторинг: auditd, fail2ban, rsyslog, файлы логов,
+#       logrotate, права /var/log.
+#  13.  Индикаторы вредоносной активности: cron-задачи, скрытые и бесхозные
+#       файлы, world-writable файлы, права критичных файлов.
 #  14.  Векторы побега из контейнеров/ВМ.
 #  15.  Шифрование и секреты: GPG-, SSH-ключи, доступность приватных ключей.
 #  16.  Сетевые атаки: ARP-таблица, маршруты, IP forwarding.
 #  17.  USB, Bluetooth, авто-вход и локальные файлы.
 #  18.  AppArmor/SELinux: загружен ли, сколько профилей в режимах.
-#  19.  Защита от эксплуатации ядра: SMEP, SMAP, NX.
+#  19.  Защита от эксплуатации ядра: SMEP, SMAP, NX, уязвимости CPU.
+#  20.  Systemd unit hardening: директивы sandboxing у активных сервисов.
+#  21.  Capabilities audit: бинарники с расширенными capabilities, SUID/SGID.
+#  22.  Ядро: compile-time опции из /boot/config-* (CONFIG_*), mmap_rnd_bits.
+#  23.  Прошивка: microcode CPU, обновления fwupd, Secure Boot.
+#  24.  Сторонние репозитории APT, snap --classic, Flatpak.
 #
 # РЕЖИМ РАБОТЫ:
 #   Только чтение и диагностика — НИЧЕГО НЕ МЕНЯЕТ и НЕ исправляет.
@@ -153,6 +164,12 @@ declare -A SYSCTL_CHECKS=(
     ["net.core.bpf_jit_harden"]="2"
     ["vm.mmap_min_addr"]="65536"
     ["kernel.perf_event_paranoid"]="3"
+    ["kernel.sysrq"]="0"
+    ["net.ipv4.conf.default.accept_redirects"]="0"
+    ["net.ipv4.conf.default.send_redirects"]="0"
+    ["net.ipv6.conf.default.accept_redirects"]="0"
+    ["net.ipv6.conf.all.accept_ra"]="0"
+    ["vm.unprivileged_userfaultfd"]="0"
 )
 
 command -v docker >/dev/null 2>&1 && DOCKER_INSTALLED=1 || DOCKER_INSTALLED=0
@@ -403,6 +420,75 @@ if [ -f "$SSHD_CFG" ]; then
             fi
         fi
     done
+
+    WEAK_CIPHERS="3des-cbc,aes128-cbc,aes192-cbc,aes256-cbc,arcfour,arcfour128,arcfour256,blowfish-cbc,cast128-cbc"
+    WEAK_MACS="hmac-md5,hmac-md5-96,hmac-sha1-96,umac-64@openssh.com"
+    WEAK_KEX="diffie-hellman-group1-sha1,diffie-hellman-group14-sha1"
+
+    configured_ciphers=$(sshd -T 2>/dev/null | grep -i "^ciphers " | awk '{print $2}')
+    found_weak=0
+    if [[ -n "$configured_ciphers" ]]; then
+        IFS=',' read -ra ciphers_arr <<< "$configured_ciphers"
+        for wc in $(echo "$WEAK_CIPHERS" | tr ',' ' '); do
+            for c in "${ciphers_arr[@]}"; do
+                [[ "$c" == "$wc" ]] && warn "SSH слабый шифр: $c" && found_weak=1
+            done
+        done
+        [[ "$found_weak" -eq 0 ]] && ok "SSH Ciphers: слабые шифры отключены"
+    fi
+
+    configured_macs=$(sshd -T 2>/dev/null | grep -i "^macs " | awk '{print $2}')
+    found_weak=0
+    if [[ -n "$configured_macs" ]]; then
+        IFS=',' read -ra macs_arr <<< "$configured_macs"
+        for wm in $(echo "$WEAK_MACS" | tr ',' ' '); do
+            for m in "${macs_arr[@]}"; do
+                [[ "$m" == "$wm" ]] && warn "SSH слабый MAC: $m" && found_weak=1
+            done
+        done
+        [[ "$found_weak" -eq 0 ]] && ok "SSH MACs: слабые MAC отключены"
+    fi
+
+    configured_kex=$(sshd -T 2>/dev/null | grep -i "^kexalgorithms " | awk '{print $2}')
+    found_weak=0
+    if [[ -n "$configured_kex" ]]; then
+        IFS=',' read -ra kex_arr <<< "$configured_kex"
+        for wk in $(echo "$WEAK_KEX" | tr ',' ' '); do
+            for k in "${kex_arr[@]}"; do
+                [[ "$k" == "$wk" ]] && warn "SSH слабый KeyExchange: $k" && found_weak=1
+            done
+        done
+        [[ "$found_weak" -eq 0 ]] && ok "SSH KexAlgorithms: слабые алгоритмы отключены"
+    fi
+
+    sshd_max_auth=$(sshd -T 2>/dev/null | grep -i "^maxauthtries " | awk '{print $2}')
+    if [[ -n "$sshd_max_auth" ]]; then
+        if [[ "$sshd_max_auth" -le 5 ]] 2>/dev/null; then
+            ok "SSH MaxAuthTries = $sshd_max_auth (<= 5)"
+        else
+            warn "SSH MaxAuthTries = $sshd_max_auth (рекомендуется <= 5)"
+        fi
+    fi
+
+    sshd_log_grace=$(sshd -T 2>/dev/null | grep -i "^logingracetime " | awk '{print $2}')
+    if [[ -n "$sshd_log_grace" ]]; then
+        if [[ "$sshd_log_grace" == "0" ]]; then
+            warn "SSH LoginGraceTime = unlimited (рекомендуется 30-120s)"
+        elif [[ "$sshd_log_grace" -le 120 ]] 2>/dev/null; then
+            ok "SSH LoginGraceTime = ${sshd_log_grace}s"
+        else
+            warn "SSH LoginGraceTime = ${sshd_log_grace}s (рекомендуется 30-120s)"
+        fi
+    fi
+
+    sshd_log_level=$(sshd -T 2>/dev/null | grep -i "^loglevel " | awk '{print $2}')
+    if [[ -n "$sshd_log_level" ]]; then
+        if [[ "$sshd_log_level" == "VERBOSE" || "$sshd_log_level" == "INFO" ]]; then
+            ok "SSH LogLevel = $sshd_log_level (достаточно для аудита)"
+        else
+            warn "SSH LogLevel = $sshd_log_level (рекомендуется VERBOSE/INFO)"
+        fi
+    fi
 fi
 
 # ============================================================================
@@ -462,6 +548,54 @@ else
   ok "Root заблокирован"
 fi
 
+echo -e "\n  ${BOLD}UMASK & login.defs:${RST}" | tee -a "$REPORT"
+umask_val=$(grep -E "^UMASK" /etc/login.defs 2>/dev/null | awk '{print $2}')
+if [[ -n "$umask_val" ]]; then
+    if [[ "$umask_val" == "027" || "$umask_val" == "077" ]]; then
+        ok "UMASK в login.defs = $umask_val"
+    else
+        warn "UMASK в login.defs = $umask_val (рекомендуется 027 или 077)"
+    fi
+else
+    warn "UMASK не задан в /etc/login.defs"
+fi
+
+sha_rounds=$(grep -E "^SHA_CRYPT_MIN_ROUNDS" /etc/login.defs 2>/dev/null | awk '{print $2}')
+if [[ -n "$sha_rounds" ]]; then
+    if [[ "$sha_rounds" -ge 5000 ]] 2>/dev/null; then
+        ok "SHA_CRYPT_MIN_ROUNDS = $sha_rounds (>= 5000)"
+    else
+        warn "SHA_CRYPT_MIN_ROUNDS = $sha_rounds (рекомендуется >= 5000)"
+    fi
+else
+    info "SHA_CRYPT_MIN_ROUNDS не задан (по умолчанию 5000)"
+fi
+
+echo -e "\n  ${BOLD}Домашние директории:${RST}" | tee -a "$REPORT"
+while IFS=: read -r user _ uid _ _ _ shell; do
+    [[ "$uid" -ge 1000 && "$uid" -lt 65534 ]] 2>/dev/null || continue
+    [[ "$shell" =~ /(bash|zsh|fish)$ ]] || continue
+    home_dir="/home/$user"
+    if [[ -d "$home_dir" ]]; then
+        home_perms=$(stat -c "%a" "$home_dir" 2>/dev/null)
+        if [[ "$home_perms" == "700" || "$home_perms" == "750" || "$home_perms" == "710" ]]; then
+            ok "Home $user: $home_perms (норма)"
+        else
+            warn "Home $user: $home_perms (рекомендуется 700 или 750)"
+        fi
+    fi
+done < /etc/passwd
+
+echo -e "\n  ${BOLD}System accounts:${RST}" | tee -a "$REPORT"
+sys_shell_bad=0
+while IFS=: read -r user _ uid _ _ _ shell; do
+    [[ "$uid" -lt 1000 && "$uid" -ne 0 ]] 2>/dev/null || continue
+    [[ "$shell" == "/bin/bash" || "$shell" == "/bin/zsh" || "$shell" == "/bin/sh" ]] || continue
+    warn "System account '$user' (uid=$uid) имеет интерактивный shell: $shell"
+    sys_shell_bad=1
+done < /etc/passwd
+[[ "$sys_shell_bad" -eq 0 ]] && ok "Все системные аккаунты (uid<1000) имеют nologin/false shell"
+
 # ============================================================================
 section "5. SUDO & PAM SECURITY"
 # ============================================================================
@@ -516,6 +650,25 @@ fi
 if [ -f /etc/security/faillock.conf ]; then
     if grep -q "^deny" /etc/security/faillock.conf 2>/dev/null; then
         ok "faillock configured"
+    fi
+fi
+
+echo -e "\n  ${BOLD}PAM password quality (pwquality.conf):${RST}" | tee -a "$REPORT"
+if [ -f /etc/security/pwquality.conf ]; then
+    for param_name in dcredit ucredit lcredit ocredit maxrepeat maxclassrepeat minclass; do
+        val=$(grep -E "^#?\s*${param_name}" /etc/security/pwquality.conf 2>/dev/null | tail -1 | awk '{print $NF}')
+        if [[ -n "$val" && ! "$val" =~ ^# ]]; then
+            ok "pwquality $param_name = $val"
+        elif [[ -z "$val" ]]; then
+            info "pwquality $param_name не задан (используется значение по умолчанию)"
+        fi
+    done
+    if [ -f /etc/pam.d/common-password ]; then
+        if grep -q "pam_faillock.so" /etc/pam.d/common-password 2>/dev/null; then
+            ok "pam_faillock.so подключен к common-password"
+        else
+            info "pam_faillock.so не подключен к common-password (brute-force защита через fail2ban)"
+        fi
     fi
 fi
 
@@ -784,6 +937,53 @@ fi
 echo -e "\n  ${BOLD}Disk Usage:${RST}" | tee -a "$REPORT"
 df -h / /tmp /var 2>/dev/null | tee -a "$REPORT"
 
+echo -e "\n  ${BOLD}/dev/shm mount options:${RST}" | tee -a "$REPORT"
+shm_opts=$(mount | grep " /dev/shm " | awk '{print $6}')
+if [[ -n "$shm_opts" ]]; then
+    info "/dev/shm: $shm_opts (noexec не рекомендуется для десктопа — ломает PulseAudio/SQLite)"
+else
+    info "/dev/shm: проверка недоступна"
+fi
+
+echo -e "\n  ${BOLD}/boot permissions:${RST}" | tee -a "$REPORT"
+if [[ -d /boot ]]; then
+    boot_perms=$(stat -c "%a" /boot 2>/dev/null)
+    if [[ "$boot_perms" == "700" || "$boot_perms" == "750" ]]; then
+        ok "/boot permissions: $boot_perms"
+    else
+        warn "/boot permissions: $boot_perms (рекомендуется 700)"
+    fi
+fi
+
+echo -e "\n  ${BOLD}Swap encryption:${RST}" | tee -a "$REPORT"
+SWAP_DEV=$(swapon --show=NAME --noheadings 2>/dev/null | head -1)
+if [[ -n "$SWAP_DEV" ]]; then
+    swap_type=$(lsblk -no FSTYPE "$SWAP_DEV" 2>/dev/null)
+    if [[ "$swap_type" == "crypto_LUKS" ]]; then
+        ok "Swap зашифрован (LUKS): $SWAP_DEV"
+    elif [[ "$swap_type" == "swap" || "$swap_type" == "" ]]; then
+        info "Swap $SWAP_DEV: $swap_type (не LUKS — подмена при.hibernate возможна)"
+    fi
+else
+    info "Swap не активен"
+fi
+
+echo -e "\n  ${BOLD}Journal size limits:${RST}" | tee -a "$REPORT"
+if [[ -f /etc/systemd/journald.conf ]]; then
+    journ_max=$(grep -E "^SystemMaxUse" /etc/systemd/journald.conf | awk -F= '{print $2}' | tr -d ' ')
+    journ_maxfile=$(grep -E "^SystemMaxFileSize" /etc/systemd/journald.conf | awk -F= '{print $2}' | tr -d ' ')
+    if [[ -n "$journ_max" ]]; then
+        ok "journald SystemMaxUse = $journ_max"
+    else
+        info "journald SystemMaxUse не задан (по умолчанию: 10% от FS или 4G)"
+    fi
+    if [[ -n "$journ_maxfile" ]]; then
+        ok "journald SystemMaxFileSize = $journ_maxfile"
+    else
+        info "journald SystemMaxFileSize не задан (по умолчанию: 1/8 от SystemMaxUse)"
+    fi
+fi
+
 # ============================================================================
 section "11. SERVICES & DAEMONS"
 # ============================================================================
@@ -800,6 +1000,37 @@ done
 
 echo -e "\n  ${BOLD}All Running Services:${RST}" | tee -a "$REPORT"
 systemctl list-units --type=service --state=running --no-pager 2>/dev/null | tee -a "$REPORT"
+
+echo -e "\n  ${BOLD}Avahi/mDNS:${RST}" | tee -a "$REPORT"
+if systemctl is-active avahi-daemon 2>/dev/null | grep -q "active"; then
+    warn "Avahi/mDNS daemon active (обнаружение сервисов — утечка информации)"
+else
+    ok "Avahi/mDNS daemon не активен"
+fi
+
+echo -e "\n  ${BOLD}CUPS/printing:${RST}" | tee -a "$REPORT"
+if systemctl is-active cups 2>/dev/null | grep -q "active"; then
+    info "CUPS daemon active (печать — нормально для десктопа)"
+else
+    ok "CUPS daemon не активен"
+fi
+
+echo -e "\n  ${BOLD}Hidden sockets (/proc/net/tcp vs ss):${RST}" | tee -a "$REPORT"
+proc_count=$(wc -l < /proc/net/tcp 2>/dev/null || echo 0)
+ss_count=$(ss -tlnH 2>/dev/null | wc -l || echo 0)
+if [[ "$proc_count" -gt 0 && "$ss_count" -gt 0 ]]; then
+    diff_val=$((proc_count - ss_count))
+    if [[ "$diff_val" -gt 5 ]]; then
+        warn "Разница /proc/net/tcp ($proc_count) vs ss ($ss_count): разница $diff_val — возможны скрытые сокеты (rootkit?)"
+    else
+        ok "/proc/net/tcp ($proc_count) vs ss ($ss_count): разница в пределах нормы"
+    fi
+else
+    info "Проверка скрытых сокетов: /proc/net/tcp=$proc_count, ss=$ss_count"
+fi
+
+echo -e "\n  ${BOLD}Enabled services (автозапуск):${RST}" | tee -a "$REPORT"
+systemctl list-unit-files --type=service --state=enabled --no-pager 2>/dev/null | head -30 | tee -a "$REPORT"
 
 # ============================================================================
 section "12. LOGGING & MONITORING"
@@ -857,6 +1088,46 @@ if [ -f /etc/logrotate.conf ]; then
     ok "logrotate configured"
 else
     warn "logrotate.conf missing"
+fi
+
+echo -e "\n  ${BOLD}Logrotate timer:${RST}" | tee -a "$REPORT"
+if systemctl is-active logrotate.timer 2>/dev/null | grep -q "active"; then
+    ok "logrotate.timer active"
+else
+    warn "logrotate.timer NOT active (ротация логов не выполняется автоматически)"
+fi
+
+echo -e "\n  ${BOLD}/var/log permissions:${RST}" | tee -a "$REPORT"
+warn_log_perms=0
+for logfile in /var/log/syslog /var/log/auth.log /var/log/kern.log /var/log/audit/audit.log; do
+    if [[ -f "$logfile" ]]; then
+        perms=$(stat -c "%a" "$logfile" 2>/dev/null)
+        owner=$(stat -c "%U:%G" "$logfile" 2>/dev/null)
+        if [[ "$perms" == "640" || "$perms" == "600" || "$perms" == "620" ]]; then
+            ok "$(basename $logfile): $perms ($owner)"
+        else
+            warn "$(basename $logfile): $perms ($owner) — рекомендуется 640 или 600"
+            warn_log_perms=1
+        fi
+    fi
+done
+[[ "$warn_log_perms" -eq 0 ]] && ok "Все основные логи имеют безопасные права"
+
+echo -e "\n  ${BOLD}auditd disk space action:${RST}" | tee -a "$REPORT"
+if [[ -f /etc/audit/auditd.conf ]]; then
+    disk_full=$(grep "^disk_full_action" /etc/audit/auditd.conf 2>/dev/null | awk -F= '{print $2}' | tr -d ' ')
+    disk_error=$(grep "^disk_error_action" /etc/audit/auditd.conf 2>/dev/null | awk -F= '{print $2}' | tr -d ' ')
+    if [[ -n "$disk_full" ]]; then
+        if [[ "$disk_full" == "SUSPEND" || "$disk_full" == "HALT" ]]; then
+            ok "auditd disk_full_action = $disk_full"
+        else
+            warn "auditd disk_full_action = $disk_full (рекомендуется SUSPEND или HALT)"
+        fi
+    else
+        info "auditd disk_full_action не задан (по умолчанию SUSPEND)"
+    fi
+else
+    info "auditd.conf не найден"
 fi
 
 # ============================================================================
@@ -1096,8 +1367,272 @@ if [ -d /mnt/c ]; then
     info "WSL/Windows mount detected - check NTFS ADS risk"
 fi
 
+echo -e "\n  ${BOLD}CPU Vulnerability Mitigations:${RST}" | tee -a "$REPORT"
+VULN_DIR="/sys/devices/system/cpu/vulnerabilities"
+if [[ -d "$VULN_DIR" ]]; then
+    for vuln_file in "$VULN_DIR"/*; do
+        vuln_name=$(basename "$vuln_file")
+        status=$(cat "$vuln_file" 2>/dev/null || echo "unknown")
+        if echo "$status" | grep -qi "not affected"; then
+            ok "CPU $vuln_name: $status"
+        elif echo "$status" | grep -qi "no microcode"; then
+            info "CPU $vuln_name: $status (обновление microcode недоступно для данного CPU)"
+        elif echo "$status" | grep -qi "smt vulnerable"; then
+            info "CPU $vuln_name: $status (Hyper-Threading уязвим, но мелиорация включена)"
+        elif echo "$status" | grep -qi "vulnerable"; then
+            warn "CPU $vuln_name: $status"
+        elif echo "$status" | grep -qi "mitigation\|conditional\|SMT\|__EXPOSE"; then
+            ok "CPU $vuln_name: $status"
+        else
+            info "CPU $vuln_name: $status"
+        fi
+    done
+else
+    info "/sys/devices/system/cpu/vulnerabilities недоступен"
+fi
+
+# ============================================================================
+section "20. SYSTEMD UNIT HARDENING"
+# ============================================================================
+
+divider
+
+echo -e "\n  ${BOLD}Systemd service sandboxing:${RST}" | tee -a "$REPORT"
+HARDENING_DIRECTIVES="ProtectSystem= ProtectHome= PrivateTmp= NoNewPrivileges= CapabilityBoundingSet= MemoryDenyWriteExecute= ProtectKernelTunables= ProtectKernelModules= ProtectKernelLogs= LockPersonality= RestrictRealtime= RemoveIPC="
+SANDBOXED=0
+UNSANDBOXED=0
+UNSANDBOXED_LIST=""
+
+for unit in $(systemctl list-units --type=service --state=active --no-pager --no-legend 2>/dev/null | awk '{print $1}' | grep -v "\.scope$"); do
+    unit_path=$(systemctl show "$unit" -p FragmentPath 2>/dev/null | cut -d= -f2)
+    if [[ -z "$unit_path" || ! -f "$unit_path" ]]; then
+        continue
+    fi
+    has_hardening=0
+    for directive in $HARDENING_DIRECTIVES; do
+        dname="${directive%%=*}"
+        if grep -qE "^\s*${dname}=" "$unit_path" 2>/dev/null; then
+            has_hardening=1
+            break
+        fi
+    done
+    if [[ "$has_hardening" -eq 1 ]]; then
+        SANDBOXED=$((SANDBOXED + 1))
+    else
+        UNSANDBOXED=$((UNSANDBOXED + 1))
+        if [[ "$UNSANDBOXED" -le 15 ]]; then
+            UNSANDBOXED_LIST="$UNSANDBOXED_LIST $unit"
+        fi
+    fi
+done
+
+ok "Services с sandboxing: $SANDBOXED"
+if [[ "$UNSANDBOXED" -gt 0 ]]; then
+    info "Services без sandboxing: $UNSANDBOXED (system services: dbus, gdm, apparmor — не могут быть в песочнице)"
+fi
+
+# ============================================================================
+section "21. CAPABILITIES AUDIT"
+# ============================================================================
+
+divider
+
+echo -e "\n  ${BOLD}Binaries с расширенными capabilities:${RST}" | tee -a "$REPORT"
+DANGEROUS_CAPS="cap_sys_admin,cap_dac_override,cap_fowner,cap_dac_read_search,cap_sys_module,cap_sys_rawio"
+LEGITIMATE_RAW="ping ping6 traceroute traceroute6 mtr mtr-packet"
+if command -v getcap >/dev/null 2>&1; then
+    CAP_OUTPUT=$(getcap -r /usr/bin /usr/sbin /bin /snap 2>/dev/null || true)
+    if [[ -n "$CAP_OUTPUT" ]]; then
+        warn_found=0
+        while IFS= read -r line; do
+            bin_path=$(echo "$line" | awk '{print $1}')
+            bin_name=$(basename "$bin_path")
+            is_legitimate=0
+            for lg in $LEGITIMATE_RAW; do
+                [[ "$bin_name" == "$lg" ]] && is_legitimate=1 && break
+            done
+            if echo "$line" | grep -qiE "cap_net_raw"; then
+                if [[ "$is_legitimate" -eq 1 ]]; then
+                    ok "cap_net_raw на $bin_name — legitimate (ICMP/traceroute)"
+                else
+                    warn "Dangerous capability: $line"
+                    warn_found=1
+                fi
+            elif echo "$line" | grep -qiE "$DANGEROUS_CAPS"; then
+                warn "Dangerous capability: $line"
+                warn_found=1
+            fi
+        done <<< "$CAP_OUTPUT"
+        [[ "$warn_found" -eq 0 ]] && ok "Нет бинарников с опасными capabilities"
+    else
+        ok "Нет бинарников с capabilities в /usr/bin, /usr/sbin, /bin, /snap"
+    fi
+else
+    info "getcap недоступен (установить: libcap2-bin)"
+fi
+
+echo -e "\n  ${BOLD}SUID/SGID binaries:${RST}" | tee -a "$REPORT"
+SUID_COUNT=$(find / -xdev \( -perm -4000 -o -perm -2000 \) -type f 2>/dev/null | wc -l || echo 0)
+info "Всего SUID/SGID бинарников: $SUID_COUNT"
+
+# ============================================================================
+section "22. KERNEL COMPILE-TIME HARDENING"
+# ============================================================================
+
+divider
+
+LATEST_CONFIG=$(ls -t /boot/config-* 2>/dev/null | head -1)
+if [[ -n "$LATEST_CONFIG" && -f "$LATEST_CONFIG" ]]; then
+    echo -e "\n  ${BOLD}Kernel compile-time security options ($LATEST_CONFIG):${RST}" | tee -a "$REPORT"
+    declare -A KERNEL_CONFIG_CHECKS=(
+        ["CONFIG_CC_STACKPROTECTOR_STRONG"]="y"
+        ["CONFIG_STRICT_KERNEL_RWX"]="y"
+        ["CONFIG_STRICT_MODULE_RWX"]="y"
+        ["CONFIG_HARDENED_USERCOPY"]="y"
+        ["CONFIG_RANDOMIZE_BASE"]="y"
+        ["CONFIG_RANDOMIZE_MEMORY"]="y"
+        ["CONFIG_INIT_ON_ALLOC_DEFAULT_ON"]="y"
+        ["CONFIG_INIT_ON_FREE_DEFAULT_ON"]="y"
+        ["CONFIG_SLAB_FREELIST_HARDENED"]="y"
+        ["CONFIG_RANDOM_KMALLOC_CACHES"]="y"
+        ["CONFIG_MODULE_SIG"]="y"
+        ["CONFIG_MODULE_SIG_FORCE"]="y"
+        ["CONFIG_SECCOMP"]="y"
+        ["CONFIG_SECCOMP_FILTER"]="y"
+    )
+    for param in "${!KERNEL_CONFIG_CHECKS[@]}"; do
+        expected="${KERNEL_CONFIG_CHECKS[$param]}"
+        actual=$(grep "^${param}=" "$LATEST_CONFIG" 2>/dev/null | awk -F= '{print $2}')
+        if [[ -z "$actual" ]]; then
+            info "$param не задан (используется default)"
+        elif [[ "$actual" == "$expected" ]]; then
+            ok "$param = $actual"
+        else
+            warn "$param = $actual (ожидалось $expected)"
+        fi
+    done
+
+    mmap_rnd_bits=$(sysctl -n vm.mmap_rnd_bits 2>/dev/null)
+    mmap_rnd_compat=$(sysctl -n vm.mmap_rnd_compat_bits 2>/dev/null)
+    if [[ -n "$mmap_rnd_bits" ]]; then
+        if [[ "$mmap_rnd_bits" -ge 32 ]]; then
+            ok "vm.mmap_rnd_bits = $mmap_rnd_bits (ASLR entropy)"
+        else
+            warn "vm.mmap_rnd_bits = $mmap_rnd_bits (рекомендуется >= 32 для max ASLR)"
+        fi
+    fi
+else
+    info "Kernel config файл не найден в /boot/"
+fi
+
+# ============================================================================
+section "23. FIRMWARE SECURITY"
+# ============================================================================
+
+divider
+
+echo -e "\n  ${BOLD}CPU Microcode:${RST}" | tee -a "$REPORT"
+microcode=$(grep -m1 "microcode" /proc/cpuinfo 2>/dev/null | awk -F: '{print $2}' | xargs)
+if [[ -n "$microcode" ]]; then
+    ok "CPU microcode: $microcode"
+else
+    info "Microcode version неизвестна"
+fi
+
+echo -e "\n  ${BOLD}Firmware updates (fwupd):${RST}" | tee -a "$REPORT"
+if command -v fwupdmgr >/dev/null 2>&1; then
+    pending=$(fwupdmgr get-updates --no-reboot-check 2>/dev/null | grep -c "=> " || echo 0)
+    if [[ "$pending" -gt 0 ]]; then
+        warn "Есть ожидающие firmware обновления: $pending"
+    else
+        ok "Нет ожидающих firmware обновлений"
+    fi
+else
+    info "fwupdmgr не установлен"
+fi
+
+echo -e "\n  ${BOLD}Secure Boot:${RST}" | tee -a "$REPORT"
+if [[ -d /sys/firmware/efi ]]; then
+    if command -v mokutil >/dev/null 2>&1; then
+        sb_state=$(mokutil --sb-state 2>/dev/null || echo "unknown")
+        if echo "$sb_state" | grep -qi "enabled"; then
+            ok "Secure Boot: $sb_state"
+        else
+            warn "Secure Boot: $sb_state"
+        fi
+    else
+        info "mokutil недоступен — проверка Secure Boot невозможна"
+    fi
+else
+    info "Система не на UEFI (Legacy BIOS)"
+fi
+
+# ============================================================================
+section "24. THIRD-PARTY REPOS & SNAP AUDIT"
+# ============================================================================
+
+divider
+
+echo -e "\n  ${BOLD}Third-party APT repositories:${RST}" | tee -a "$REPORT"
+CUSTOM_REPOS=""
+for src in /etc/apt/sources.list.d/*.list /etc/apt/sources.list.d/*.sources; do
+    if [[ -f "$src" ]]; then
+        src_name=$(basename "$src")
+        src_lines=$(grep -vE "^#|^deb-src" "$src" 2>/dev/null | grep "^deb " || true)
+        if [[ -n "$src_lines" ]]; then
+            while IFS= read -r line; do
+                repo_url=$(echo "$line" | awk '{print $2}')
+                if ! echo "$repo_url" | grep -qiE "ubuntu\.com|zorin|archive\.canonical|packages\.cloudflare|brave|onlyoffice"; then
+                    CUSTOM_REPOS="$CUSTOM_REPOS\n  $src_name: $repo_url"
+                fi
+            done <<< "$src_lines"
+        fi
+    fi
+done
+if [[ -n "$CUSTOM_REPOS" ]]; then
+    warn "Non-standard repositories:${CUSTOM_REPOS}"
+else
+    ok "Все APT репозитории стандартные (Ubuntu/Zorin)"
+fi
+
+echo -e "\n  ${BOLD}Snap packages with --classic (без песочницы):${RST}" | tee -a "$REPORT"
+if command -v snap >/dev/null 2>&1; then
+    CLASSIC_SNAPS=$(snap list 2>/dev/null | awk 'NR>1 {print $1, $2}' | while read name rev; do
+        snap_info=$(snap info "$name" 2>/dev/null | grep "^confinement:" || true)
+        if echo "$snap_info" | grep -q "classic"; then
+            echo "$name ($rev)"
+        fi
+    done)
+    if [[ -n "$CLASSIC_SNAPS" ]]; then
+        warn "Classic snaps (обход песочницы):$CLASSIC_SNAPS"
+    else
+        ok "Нет snap пакетов с --classic"
+    fi
+else
+    info "snap не установлен"
+fi
+
+echo -e "\n  ${BOLD}Flatpak packages:${RST}" | tee -a "$REPORT"
+if command -v flatpak >/dev/null 2>&1; then
+    FLAT_COUNT=$(flatpak list 2>/dev/null | wc -l || echo 0)
+    FLAT_UPDATES=$(flatpak remote-ls --updates 2>/dev/null | grep -v "^$" | wc -l || echo 0)
+    info "Установлено Flatpak пакетов: $FLAT_COUNT (обновлений: $FLAT_UPDATES)"
+    if [[ "$FLAT_UPDATES" -gt 0 ]]; then
+        warn "Есть обновления Flatpak пакетов: $FLAT_UPDATES"
+    fi
+else
+    info "Flatpak не установлен"
+fi
+
 # ============================================================================
 # VERDICT
 # ============================================================================
 
 verdict
+
+# Вернуть отчёт реальному пользователю (не root)
+REAL_USER="${SUDO_USER:-root}"
+if [[ "$REAL_USER" != "root" ]]; then
+    chown "$REAL_USER:$(id -gn "$REAL_USER")" "$REPORT"
+    echo "Report owned by: $REAL_USER"
+fi
