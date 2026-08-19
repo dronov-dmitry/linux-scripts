@@ -5,7 +5,7 @@
 #
 # ЧТО ДЕЛАЕТ ЭТОТ СКРИПТ:
 #   Проводит диагностику безопасности хоста и формирует текстовый отчёт
-#   /home/kat/security-audit-2_report_<дата_время>.txt с итоговым вердиктом
+#   /home/kat/security-audit_report_<дата_время>.txt с итоговым вердиктом
 #   (PASS/FAIL/WARN/INFO) и списком критичных исправлений и рекомендаций.
 #
 # ПРОВЕРЯЕМЫЕ ОБЛАСТИ (19 разделов):
@@ -40,7 +40,7 @@
 #
 # ИСПОЛЬЗОВАНИЕ:
 #   sudo ./security-audit.sh
-#   Результат: отчёт сохраняется в /home/kat/security-audit-2_report_*.txt
+#   Результат: отчёт сохраняется в /home/kat/security-audit_report_*.txt
 #               и выводится в терминал; подсчитывается PASS/FAIL/WARN/INFO.
 #
 # ЗАМЕЧАНИЕ ПО ПРАВКАМ (необязательные проверки):
@@ -59,7 +59,7 @@ if [[ $EUID -ne 0 ]]; then
   exit 1
 fi
 
-REPORT="/home/kat/security-audit-2_report_$(date +%Y%m%d_%H%M%S).txt"
+REPORT="/home/kat/security-audit_report_$(date +%Y%m%d_%H%M%S).txt"
 RED='\033[0;31m'
 YEL='\033[0;33m'
 GRN='\033[0;32m'
