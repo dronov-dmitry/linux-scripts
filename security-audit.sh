@@ -1582,7 +1582,7 @@ for src in /etc/apt/sources.list.d/*.list /etc/apt/sources.list.d/*.sources; do
         if [[ -n "$src_lines" ]]; then
             while IFS= read -r line; do
                 repo_url=$(echo "$line" | awk '{print $2}')
-                if ! echo "$repo_url" | grep -qiE "ubuntu\.com|zorin|archive\.canonical|packages\.cloudflare|brave|onlyoffice"; then
+                if ! echo "$repo_url" | grep -qiE "ubuntu\.com|zorin|archive\.canonical|packages\.cloudflare|brave|onlyoffice|cli\.github\.com"; then
                     CUSTOM_REPOS="$CUSTOM_REPOS\n  $src_name: $repo_url"
                 fi
             done <<< "$src_lines"
