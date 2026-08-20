@@ -1016,17 +1016,17 @@ else
 fi
 
 echo -e "\n  ${BOLD}Hidden sockets (/proc/net/tcp vs ss):${RST}" | tee -a "$REPORT"
-proc_count=$(wc -l < /proc/net/tcp 2>/dev/null || echo 0)
-ss_count=$(ss -tlnH 2>/dev/null | wc -l || echo 0)
-if [[ "$proc_count" -gt 0 && "$ss_count" -gt 0 ]]; then
-    diff_val=$((proc_count - ss_count))
-    if [[ "$diff_val" -gt 5 ]]; then
-        warn "Разница /proc/net/tcp ($proc_count) vs ss ($ss_count): разница $diff_val — возможны скрытые сокеты (rootkit?)"
+proc_listen=$( { cat /proc/net/tcp /proc/net/tcp6 2>/dev/null; } | awk 'NR>1 && $4=="0A" {c++} END{print c+0}' )
+ss_listen=$(ss -tlnH 2>/dev/null | wc -l || echo 0)
+if [[ "$ss_listen" -gt 0 ]]; then
+    diff_val=$((proc_listen - ss_listen))
+    if [[ "$diff_val" -gt 3 ]]; then
+        warn "Разница LISTEN /proc/net/tcp ($proc_listen) vs ss ($ss_listen): разница $diff_val — возможны скрытые сокеты (rootkit?)"
     else
-        ok "/proc/net/tcp ($proc_count) vs ss ($ss_count): разница в пределах нормы"
+        ok "/proc/net/tcp LISTEN ($proc_listen) vs ss LISTEN ($ss_listen): разница в пределах нормы"
     fi
 else
-    info "Проверка скрытых сокетов: /proc/net/tcp=$proc_count, ss=$ss_count"
+    info "Проверка скрытых сокетов: LISTEN /proc/net/tcp=$proc_listen, ss=$ss_listen"
 fi
 
 echo -e "\n  ${BOLD}Enabled services (автозапуск):${RST}" | tee -a "$REPORT"
@@ -1190,7 +1190,7 @@ else
 fi
 
 echo -e "\n  ${BOLD}Files with no valid owner:${RST}" | tee -a "$REPORT"
-NOOWN=$(timeout 30 find / -path /proc -prune -o -path /sys -prune -o -path /dev -prune -o \( -nouser -o -nogroup \) -print 2>/dev/null | head -20)
+NOOWN=$(timeout 30 find / \( -path /proc -o -path /sys -o -path /dev -o -path /var/lib/containerd -o -path /var/lib/docker \) -prune -o \( -nouser -o -nogroup \) -print 2>/dev/null | head -20)
 if [ -n "$NOOWN" ]; then
     warn "Unowned files found:"
     echo "$NOOWN" | tee -a "$REPORT"
@@ -1578,11 +1578,13 @@ CUSTOM_REPOS=""
 for src in /etc/apt/sources.list.d/*.list /etc/apt/sources.list.d/*.sources; do
     if [[ -f "$src" ]]; then
         src_name=$(basename "$src")
-        src_lines=$(grep -vE "^#|^deb-src" "$src" 2>/dev/null | grep "^deb " || true)
+        # .list: строки "deb [опции] URL ..."; .sources: поле "URIs: URL ..."
+        src_lines=$(grep -vE "^#" "$src" 2>/dev/null | grep -E "^deb |^URIs:" || true)
         if [[ -n "$src_lines" ]]; then
             while IFS= read -r line; do
-                repo_url=$(echo "$line" | awk '{print $2}')
-                if ! echo "$repo_url" | grep -qiE "ubuntu\.com|zorin|archive\.canonical|packages\.cloudflare|brave|onlyoffice|cli\.github\.com"; then
+                repo_url=$(echo "$line" | grep -oE 'https?://[^ ]+' | head -1)
+                # Официальные и легитимные репозитории (Ubuntu/Zorin/Debian + популярные сторонние)
+                if ! echo "$repo_url" | grep -qiE "ubuntu\.com|zorin|archive\.canonical|packages\.cloudflare|brave|onlyoffice|cli\.github\.com|deb\.debian\.org|security\.debian\.org|download\.docker\.com|download\.sublimetext\.com|ngrok-agent|playit-cloud|google\.linux|dl\.google\.com|windsurf|codeiumdata|mega\.nz|nodesource"; then
                     CUSTOM_REPOS="$CUSTOM_REPOS\n  $src_name: $repo_url"
                 fi
             done <<< "$src_lines"
@@ -1592,7 +1594,7 @@ done
 if [[ -n "$CUSTOM_REPOS" ]]; then
     warn "Non-standard repositories:${CUSTOM_REPOS}"
 else
-    ok "Все APT репозитории стандартные (Ubuntu/Zorin)"
+    ok "Все APT репозитории стандартные (Ubuntu/Zorin/Debian) или легитимные сторонние"
 fi
 
 echo -e "\n  ${BOLD}Snap packages with --classic (без песочницы):${RST}" | tee -a "$REPORT"
