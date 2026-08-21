@@ -16,9 +16,23 @@ fi
 
 command -v kate >/dev/null 2>&1 || { msg "Ошибка: kate не найдена"; exit 1; }
 
+WAS_RUNNING=0
 if pgrep -x kate >/dev/null 2>&1 || pgrep -x kwrite >/dev/null 2>&1; then
-    msg "ВНИМАНИЕ: Kate/KWrite запущены. Скрипт перезапишет настройки, поэтому"
-    msg "лучше закрыть их сейчас и перезапустить после выполнения скрипта."
+    WAS_RUNNING=1
+    msg "[..] Kate/KWrite запущены — закрываю, чтобы она не затёрла настройки при выходе."
+    pkill -TERM -x kate 2>/dev/null || true
+    pkill -TERM -x kwrite 2>/dev/null || true
+    for _ in $(seq 1 20); do
+        pgrep -x kate >/dev/null 2>&1 || pgrep -x kwrite >/dev/null 2>&1 || break
+        sleep 0.5
+    done
+    if pgrep -x kate >/dev/null 2>&1 || pgrep -x kwrite >/dev/null 2>&1; then
+        msg "Ошибка: Kate не закрылась (возможно, ждёт ответа про несохранённые правки)."
+        msg "Закрой её вручную и запусти скрипт ещё раз."
+        exit 1
+    fi
+    sleep 1
+    msg "[ok] Kate закрыта"
 fi
 
 mkdir -p "$(dirname "$KATERC")" "$HOME/.local/share/applications" "$(dirname "$QSS")"
@@ -49,8 +63,10 @@ PYEOF
 }
 
 set_cfg "KTextEditor Renderer" "Auto Color Theme Selection" "false"
-set_cfg "KTextEditor Renderer" "Color Theme" "Breeze Dark"
-msg "[ok] Тема области редактора: Breeze Dark ($KATERC)"
+# NB: именно "ayu Dark" с маленькой буквы — так тема названа в самом
+# ayu-dark.theme (опечатка апстрима), поиск в Kate регистрозависимый.
+set_cfg "KTextEditor Renderer" "Color Theme" "ayu Dark"
+msg "[ok] Тема области редактора: ayu Dark ($KATERC)"
 
 cat > "$QSS" <<'QSSEOF'
 * {
