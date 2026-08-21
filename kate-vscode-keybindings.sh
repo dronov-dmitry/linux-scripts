@@ -612,6 +612,24 @@ else
     echo "OK: no custom Kate launcher present"
 fi
 
+# Fix the launcher icon after switching to the snap package.
+# Classic snaps do not export icons to the host, so Icon=kate stops
+# resolving once the distro Kate (which shipped hicolor icons) is gone.
+# Point Icon/Exec at absolute snap paths; /snap/kate/current survives
+# snap refreshes.
+KATE_SNAP_ICON="/snap/kate/current/usr/share/icons/hicolor/scalable/apps/kate.svg"
+if [ -f "$KATE_SNAP_ICON" ] && [ -f "$KATE_LAUNCHER" ]; then
+    sed -i -e 's|^Exec=kate |Exec=/snap/bin/kate |' \
+           -e '\|^Icon=/snap/kate/|!s|^Icon=kate$|Icon='"$KATE_SNAP_ICON"'|' "$KATE_LAUNCHER"
+    echo "OK: fixed Kate launcher icon -> $KATE_LAUNCHER"
+fi
+SNAP_DESKTOP="/var/lib/snapd/desktop/applications/kate_kate.desktop"
+if [ -f "$KATE_SNAP_ICON" ] && [ -f "$SNAP_DESKTOP" ]; then
+    mkdir -p "$(dirname "$KATE_LAUNCHER")"
+    sed 's|^Icon=kate$|Icon='"$KATE_SNAP_ICON"'|' "$SNAP_DESKTOP" > "$HOME/.local/share/applications/kate_kate.desktop"
+    echo "OK: local override with icon for $SNAP_DESKTOP"
+fi
+
 echo
 echo "Applied bindings:"
 echo
